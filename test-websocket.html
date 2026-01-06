@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Driver Location Tracking Test</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .panel {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h2 {
+            color: #333;
+            margin-top: 0;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 14px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button.danger {
+            background: #f44336;
+        }
+        button.danger:hover {
+            background: #da190b;
+        }
+        button.secondary {
+            background: #2196F3;
+        }
+        button.secondary:hover {
+            background: #0b7dda;
+        }
+        input, select {
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .log {
+            background: #f8f9fa;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            padding: 5px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .driver-card {
+            background: #f8f9fa;
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 4px;
+            border-left: 4px solid #4CAF50;
+        }
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+        .badge.available {
+            background: #d4edda;
+            color: #155724;
+        }
+        .badge.busy {
+            background: #fff3cd;
+            color: #856404;
+        }
+        .badge.offline {
+            background: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <h1>🚗 Real-Time Driver Location Tracking Test</h1>
+    
+    <div class="container">
+        <!-- Driver Panel -->
+        <div class="panel">
+            <h2>Driver Simulator</h2>
+            <div id="driverStatus" class="status disconnected">Disconnected</div>
+            
+            <div>
+                <input type="text" id="driverId" placeholder="Driver ID (e.g., DR001)" value="DR001">
+                <input type="text" id="driverName" placeholder="Driver Name" value="John Doe">
+                <select id="vehicleType">
+                    <option value="sedan">Sedan</option>
+                    <option value="suv">SUV</option>
+                    <option value="auto">Auto</option>
+                    <option value="bike">Bike</option>
+                </select>
+                <input type="number" id="latitude" placeholder="Latitude" value="28.6139" step="0.0001">
+                <input type="number" id="longitude" placeholder="Longitude" value="77.2090" step="0.0001">
+            </div>
+            
+            <div>
+                <button onclick="goOnline()">Go Online</button>
+                <button class="danger" onclick="goOffline()">Go Offline</button>
+                <button class="secondary" onclick="updateLocation()">Update Location</button>
+            </div>
+            
+            <div>
+                <button class="secondary" onclick="changeStatus('available')">Available</button>
+                <button class="secondary" onclick="changeStatus('busy')">Busy</button>
+            </div>
+            
+            <h3>Simulate Movement</h3>
+            <button onclick="simulateMovement()">Start Auto Movement</button>
+            <button class="danger" onclick="stopMovement()">Stop Movement</button>
+            
+            <h3>Driver Logs</h3>
+            <div id="driverLog" class="log"></div>
+        </div>
+        
+        <!-- User/Admin Panel -->
+        <div class="panel">
+            <h2>User/Admin Dashboard</h2>
+            <div id="connectionStatus" class="status disconnected">Disconnected</div>
+            
+            <div>
+                <input type="number" id="userLat" placeholder="Your Latitude" value="28.6139" step="0.0001">
+                <input type="number" id="userLon" placeholder="Your Longitude" value="77.2090" step="0.0001">
+                <input type="number" id="radius" placeholder="Radius (km)" value="5">
+            </div>
+            
+            <div>
+                <button onclick="findNearbyDrivers()">Find Nearby Drivers</button>
+                <button class="secondary" onclick="getAllDrivers()">Get All Active Drivers</button>
+            </div>
+            
+            <h3>Active Drivers (<span id="driverCount">0</span>)</h3>
+            <div id="driversList"></div>
+            
+            <h3>Event Logs</h3>
+            <div id="eventLog" class="log"></div>
+        </div>
+    </div>
+
+    <script>
+        let socket = null;
+        let userSocket = null;
+        let movementInterval = null;
+
+        // Driver Socket
+        function connectDriver() {
+            if (!socket) {
+                socket = io('http://localhost:5000');
+                
+                socket.on('connect', () => {
+                    updateDriverStatus('Connected', true);
+                    logDriver('✅ Connected to server');
+                });
+                
+                socket.on('disconnect', () => {
+                    updateDriverStatus('Disconnected', false);
+                    logDriver('❌ Disconnected from server');
+                });
+                
+                socket.on('ride:request:received', (data) => {
+                    logDriver(`🔔 New ride request: ${JSON.stringify(data)}`);
+                });
+                
+                socket.on('driver:location:update', (data) => {
+                    if (data.driverId === document.getElementById('driverId').value) {
+                        logDriver(`📍 Location broadcasted: ${data.location.latitude}, ${data.location.longitude}`);
+                    }
+                });
+            }
+        }
+
+        // User Socket
+        function connectUser() {
+            if (!userSocket) {
+                userSocket = io('http://localhost:5000');
+                
+                userSocket.on('connect', () => {
+                    updateConnectionStatus('Connected', true);
+                    logEvent('✅ Connected to server');
+                    getAllDrivers();
+                });
+                
+                userSocket.on('disconnect', () => {
+                    updateConnectionStatus('Disconnected', false);
+                    logEvent('❌ Disconnected from server');
+                });
+                
+                userSocket.on('drivers:nearby', (drivers) => {
+                    logEvent(`📍 Found ${drivers.length} nearby drivers`);
+                    displayDrivers(drivers);
+                });
+                
+                userSocket.on('drivers:list', (drivers) => {
+                    logEvent(`👥 Received ${drivers.length} active drivers`);
+                    displayDrivers(drivers);
+                });
+                
+                userSocket.on('driver:location:update', (data) => {
+                    logEvent(`📍 Driver ${data.driverId} location updated`);
+                    updateDriverLocation(data);
+                });
+                
+                userSocket.on('driver:status:update', (data) => {
+                    logEvent(`📊 Driver ${data.driverId} status: ${data.status}`);
+                });
+                
+                userSocket.on('driver:status', (data) => {
+                    logEvent(`🟢 Driver ${data.driverId} is ${data.status}`);
+                });
+                
+                userSocket.on('driver:offline', (data) => {
+                    logEvent(`🔴 Driver ${data.driverId} went offline`);
+                    removeDriver(data.driverId);
+                });
+            }
+        }
+
+        // Initialize connections
+        connectDriver();
+        connectUser();
+
+        function goOnline() {
+            const driverId = document.getElementById('driverId').value;
+            const name = document.getElementById('driverName').value;
+            const vehicleType = document.getElementById('vehicleType').value;
+            const latitude = parseFloat(document.getElementById('latitude').value);
+            const longitude = parseFloat(document.getElementById('longitude').value);
+            
+            socket.emit('driver:online', {
+                driverId,
+                name,
+                vehicleType,
+                location: { latitude, longitude }
+            });
+            
+            logDriver(`🟢 Going online at ${latitude}, ${longitude}`);
+        }
+
+        function goOffline() {
+            socket.disconnect();
+            socket = null;
+            connectDriver();
+            logDriver('🔴 Going offline');
+        }
+
+        function updateLocation() {
+            const driverId = document.getElementById('driverId').value;
+            const latitude = parseFloat(document.getElementById('latitude').value);
+            const longitude = parseFloat(document.getElementById('longitude').value);
+            
+            socket.emit('driver:location', {
+                driverId,
+                location: { latitude, longitude },
+                speed: Math.random() * 60,
+                heading: Math.random() * 360
+            });
+            
+            logDriver(`📍 Updated location: ${latitude}, ${longitude}`);
+        }
+
+        function changeStatus(status) {
+            const driverId = document.getElementById('driverId').value;
+            socket.emit('driver:status', { driverId, status });
+            logDriver(`📊 Changed status to: ${status}`);
+        }
+
+        function simulateMovement() {
+            logDriver('🏃 Starting auto movement simulation');
+            movementInterval = setInterval(() => {
+                const latInput = document.getElementById('latitude');
+                const lonInput = document.getElementById('longitude');
+                
+                // Random movement
+                latInput.value = (parseFloat(latInput.value) + (Math.random() - 0.5) * 0.001).toFixed(4);
+                lonInput.value = (parseFloat(lonInput.value) + (Math.random() - 0.5) * 0.001).toFixed(4);
+                
+                updateLocation();
+            }, 3000); // Update every 3 seconds
+        }
+
+        function stopMovement() {
+            if (movementInterval) {
+                clearInterval(movementInterval);
+                movementInterval = null;
+                logDriver('⏸️ Stopped auto movement');
+            }
+        }
+
+        function findNearbyDrivers() {
+            const latitude = parseFloat(document.getElementById('userLat').value);
+            const longitude = parseFloat(document.getElementById('userLon').value);
+            const radius = parseInt(document.getElementById('radius').value);
+            
+            userSocket.emit('user:request:nearby', {
+                location: { latitude, longitude },
+                radius
+            });
+            
+            logEvent(`🔍 Searching for drivers within ${radius} km`);
+        }
+
+        function getAllDrivers() {
+            userSocket.emit('drivers:get:all');
+            logEvent('📋 Requesting all active drivers');
+        }
+
+        function displayDrivers(drivers) {
+            const list = document.getElementById('driversList');
+            const count = document.getElementById('driverCount');
+            
+            count.textContent = drivers.length;
+            
+            list.innerHTML = drivers.map(driver => `
+                <div class="driver-card">
+                    <strong>${driver.name || driver.driverId}</strong>
+                    <span class="badge ${driver.status}">${driver.status}</span>
+                    <br>
+                    <small>ID: ${driver.driverId}</small><br>
+                    <small>Vehicle: ${driver.vehicleType || 'N/A'}</small><br>
+                    <small>Location: ${driver.location?.latitude?.toFixed(4)}, ${driver.location?.longitude?.toFixed(4)}</small><br>
+                    ${driver.distance ? `<small>Distance: ${driver.distance} km</small>` : ''}
+                </div>
+            `).join('');
+        }
+
+        function updateDriverLocation(data) {
+            // Update specific driver in the list
+            getAllDrivers();
+        }
+
+        function removeDriver(driverId) {
+            getAllDrivers();
+        }
+
+        function updateDriverStatus(status, connected) {
+            const statusDiv = document.getElementById('driverStatus');
+            statusDiv.textContent = status;
+            statusDiv.className = `status ${connected ? 'connected' : 'disconnected'}`;
+        }
+
+        function updateConnectionStatus(status, connected) {
+            const statusDiv = document.getElementById('connectionStatus');
+            statusDiv.textContent = status;
+            statusDiv.className = `status ${connected ? 'connected' : 'disconnected'}`;
+        }
+
+        function logDriver(message) {
+            const log = document.getElementById('driverLog');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            log.insertBefore(entry, log.firstChild);
+        }
+
+        function logEvent(message) {
+            const log = document.getElementById('eventLog');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            log.insertBefore(entry, log.firstChild);
+        }
+    </script>
+</body>
+</html>
